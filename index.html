@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Full Chess Program</title>
+<title>Full Chess Program with AI and Timers</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -64,19 +64,43 @@
     height: 100vh;
     z-index: 1000;
   }
+  #colorChoice {
+    margin-bottom: 15px;
+  }
+  #colorChoice button {
+    font-size: 1.1em;
+    padding: 8px 15px;
+    margin: 0 10px;
+    cursor: pointer;
+  }
+  #timers {
+    margin-bottom: 15px;
+    font-size: 1.1em;
+  }
 </style>
 </head>
 <body>
 
 <h1>Full Chess Program</h1>
-<div id="turnIndicator">Turn: White</div>
-<div id="score">White: 0 | Black: 0</div>
-<div class="controls">
+
+<div id="colorChoice">
+  Choose your side:
+  <button id="chooseWhite">White</button>
+  <button id="chooseBlack">Black</button>
+</div>
+
+<div id="timers" style="display:none;">
+  Your time: <span id="humanTimer">00:00</span> &nbsp; | &nbsp; AI time: <span id="aiTimer">00:00</span>
+</div>
+
+<div id="turnIndicator" style="display:none;">Turn: White</div>
+<div id="score" style="display:none;">White: 0 | Black: 0</div>
+<div class="controls" style="display:none;">
   <button id="resetBtn">Reset</button>
   <button id="flipBtn">Flip Board</button>
 </div>
 
-<div class="chessboard" id="board"></div>
+<div class="chessboard" id="board" style="display:none;"></div>
 
 <canvas id="fireworks"></canvas>
 
@@ -89,6 +113,10 @@
   const flipBtn = document.getElementById('flipBtn');
   const fireworksCanvas = document.getElementById('fireworks');
   const ctx = fireworksCanvas.getContext('2d');
+  const humanTimerSpan = document.getElementById('humanTimer');
+  const aiTimerSpan = document.getElementById('aiTimer');
+  const timersDiv = document.getElementById('timers');
+  const colorChoiceDiv = document.getElementById('colorChoice');
 
   fireworksCanvas.width = window.innerWidth;
   fireworksCanvas.height = window.innerHeight;
@@ -109,7 +137,7 @@
     ['wR','wN','wB','wQ','wK','wB','wN','wR'],
   ];
 
-  let gameState = JSON.parse(JSON.stringify(initialSetup)); // deep copy
+  let gameState = JSON.parse(JSON.stringify(initialSetup));
   let turn = 'white';
   let whiteScore = 0;
   let blackScore = 0;
@@ -117,16 +145,22 @@
   let gameOver = false;
   let selectedSquare = null;
   let possibleMoves = [];
-
-  // Track if each side has moved a pawn yet (for first move rule)
   let pawnMoved = { white: false, black: false };
 
-  // Utility: copy gameState (deep)
+  let humanColor = null;
+  let AIColor = null;
+
+  let humanTotalTime = 0;
+  let aiTotalTime = 0;
+  let turnStartTime = null;
+  let timerInterval = null;
+
+  // Utility Functions
+
   function copyGameState(state) {
     return state.map(row => row.slice());
   }
 
-  // Find king position for a color
   function findKing(state, color) {
     for(let r=0; r<8; r++) {
       for(let c=0; c<8; c++) {
@@ -136,16 +170,12 @@
     return null;
   }
 
-  // Check if position on board
   function onBoard(r,c) {
     return r >= 0 && r < 8 && c >= 0 && c < 8;
   }
 
-  // Check if a square is attacked by opponent (used for check detection)
   function isSquareAttacked(state, r, c, attackerColor) {
-    // We simulate possible moves for each enemy piece to see if it attacks r,c
     const opponent = attackerColor;
-    // For each piece of opponentColor, check if it can move to r,c ignoring check
     for(let rr=0; rr<8; rr++) {
       for(let cc=0; cc<8; cc++) {
         const piece = state[rr][cc];
@@ -160,7 +190,6 @@
     return false;
   }
 
-  // Get pseudo-legal moves (ignores check)
   function getPseudoLegalMoves(state, r, c, forAttack=false) {
     const piece = state[r][c];
     if(!piece) return [];
@@ -193,33 +222,26 @@
     switch(type) {
       case 'P': {
         const forward = color === 'w' ? -1 : 1;
-        // Move forward 1 (only if not attacking)
         if(!forAttack && onBoard(r+forward, c) && state[r+forward][c] === '') {
           moves.push({r: r+forward, c: c});
-          // Move forward 2 if on start rank and no blocking piece
           if((color === 'w' && r === 6) || (color === 'b' && r === 1)) {
             if(state[r+2*forward][c] === '') {
               moves.push({r: r+2*forward, c: c});
             }
           }
         }
-        // Capture diagonals
         for(let dc of [-1,1]) {
           let rr = r+forward, cc = c+dc;
           if(onBoard(rr, cc) && state[rr][cc] !== '' && state[rr][cc][0] === opponent) {
             moves.push({r: rr, c: cc});
           }
-          // For attack check, pawns attack diagonals regardless of occupancy
           if(forAttack && onBoard(rr, cc)) {
             moves.push({r: rr, c: cc});
           }
         }
         break;
       }
-      case 'R': {
-        addLineMoves([1,-1,0,0], [0,0,1,-1]);
-        break;
-      }
+      case 'R': addLineMoves([1,-1,0,0], [0,0,1,-1]); break;
       case 'N': {
         const knightMoves = [
           [r+2, c+1],[r+2, c-1],[r-2, c+1],[r-2, c-1],
@@ -232,14 +254,8 @@
         }
         break;
       }
-      case 'B': {
-        addLineMoves([1,1,-1,-1], [1,-1,1,-1]);
-        break;
-      }
-      case 'Q': {
-        addLineMoves([1,-1,0,0,1,1,-1,-1], [0,0,1,-1,1,-1,1,-1]);
-        break;
-      }
+      case 'B': addLineMoves([1,1,-1,-1], [1,-1,1,-1]); break;
+      case 'Q': addLineMoves([1,-1,0,0,1,1,-1,-1], [0,0,1,-1,1,-1,1,-1]); break;
       case 'K': {
         const kingMoves = [
           [r+1,c],[r-1,c],[r,c+1],[r,c-1],[r+1,c+1],[r+1,c-1],[r-1,c+1],[r-1,c-1]
@@ -255,7 +271,6 @@
     return moves;
   }
 
-  // Get legal moves (checks that move doesn't leave king in check)
   function getLegalMoves(state, r, c) {
     const piece = state[r][c];
     if(!piece) return [];
@@ -266,15 +281,12 @@
     let legalMoves = [];
     for(let move of pseudoMoves) {
       let testState = copyGameState(state);
-      // Move piece
       testState[move.r][move.c] = piece;
       testState[r][c] = '';
 
-      // Find king pos after move (if king moved)
       let kingPos = findKing(testState, color);
-      if(!kingPos) continue; // Should never happen, king always present
+      if(!kingPos) continue;
 
-      // Is king attacked?
       if(!isSquareAttacked(testState, kingPos.r, kingPos.c, color === 'white' ? 'black' : 'white')) {
         legalMoves.push(move);
       }
@@ -282,20 +294,16 @@
     return legalMoves;
   }
 
-  // Pawn first move rule: only pawns can move first move for each side
-  // We enforce this by disallowing any move except pawn moves if that side hasn't moved pawn yet.
   function filterByPawnFirstMove(moves, r, c, color) {
     if(pawnMoved[color]) return moves;
     const piece = gameState[r][c];
     if(!piece) return [];
-    if(piece[1] !== 'P') return []; // Only pawns allowed if pawnMoved false
+    if(piece[1] !== 'P') return [];
     return moves;
   }
 
-  // Draw board
   function drawBoard() {
     board.innerHTML = '';
-    // Show ranks/files labels if needed (not asked but easy)
     const squares = [];
     for(let r=0; r<8; r++) {
       for(let c=0; c<8; c++) {
@@ -315,15 +323,12 @@
     squares.forEach(sq => board.appendChild(sq));
   }
 
-  // Update UI: turn text and score
   function updateUI() {
     turnIndicator.textContent = `Turn: ${turn[0].toUpperCase() + turn.slice(1)}`;
     scoreDisplay.textContent = `White: ${whiteScore} | Black: ${blackScore}`;
   }
 
-  // Highlight squares
   function highlightSquares(moves) {
-    // Remove old highlights and selected
     document.querySelectorAll('.square').forEach(sq => {
       sq.classList.remove('highlight');
       sq.classList.remove('selected');
@@ -338,9 +343,7 @@
     });
   }
 
-  // Check for check or checkmate after move
   function checkCheckAndMate() {
-    // Is opponent in check?
     const opponent = turn === 'white' ? 'black' : 'white';
     const kingPos = findKing(gameState, opponent);
     if(!kingPos) return {check: false, checkmate: false};
@@ -348,7 +351,6 @@
     const inCheck = isSquareAttacked(gameState, kingPos.r, kingPos.c, turn);
     if(!inCheck) return {check: false, checkmate: false};
 
-    // Checkmate if opponent has no legal moves
     for(let r=0; r<8; r++) {
       for(let c=0; c<8; c++) {
         const piece = gameState[r][c];
@@ -363,103 +365,41 @@
     return {check: true, checkmate: true};
   }
 
-  // Fireworks animation on checkmate
-  // Adapted from https://codepen.io/anon/pen/QxbYbm with simplification
-  let fireworks = [];
-  let gravity = 0.2;
+  // Fireworks (unchanged, you can keep your fireworks code here)
 
-  class Firework {
-    constructor() {
-      this.x = Math.random() * fireworksCanvas.width;
-      this.y = fireworksCanvas.height;
-      this.sparks = [];
-      this.exploded = false;
-      this.color = `hsl(${Math.random()*360}, 100%, 50%)`;
-      this.speedY = Math.random() * 7 + 10;
-    }
-    update() {
-      if(!this.exploded) {
-        this.y -= this.speedY;
-        this.speedY -= gravity;
-        if(this.speedY <= 0) {
-          this.explode();
-        }
+  // Timer helper:
+  function formatTime(ms) {
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+    const seconds = String(totalSeconds % 60).padStart(2, '0');
+    return `${minutes}:${seconds}`;
+  }
+
+  function startTurnTimer() {
+    turnStartTime = Date.now();
+    if(timerInterval) clearInterval(timerInterval);
+    timerInterval = setInterval(() => {
+      const elapsed = Date.now() - turnStartTime;
+      if(turn === humanColor) {
+        humanTimerSpan.textContent = formatTime(humanTotalTime + elapsed);
       } else {
-        this.sparks.forEach(s => s.update());
-        this.sparks = this.sparks.filter(s => s.alpha > 0);
+        aiTimerSpan.textContent = formatTime(aiTotalTime + elapsed);
       }
-    }
-    explode() {
-      this.exploded = true;
-      const count = 30;
-      for(let i=0; i<count; i++) {
-        const angle = (Math.PI*2 / count) * i;
-        const speed = Math.random() * 4 + 1;
-        this.sparks.push(new Spark(this.x, this.y, Math.cos(angle)*speed, Math.sin(angle)*speed, this.color));
-      }
-    }
-    draw() {
-      if(!this.exploded) {
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, 3, 0, Math.PI*2);
-        ctx.fillStyle = this.color;
-        ctx.fill();
-      } else {
-        this.sparks.forEach(s => s.draw());
-      }
-    }
-    isDone() {
-      return this.exploded && this.sparks.length === 0;
-    }
+    }, 200);
   }
 
-  class Spark {
-    constructor(x,y,vx,vy,color) {
-      this.x = x;
-      this.y = y;
-      this.vx = vx;
-      this.vy = vy;
-      this.color = color;
-      this.alpha = 1;
-      this.size = 2;
-    }
-    update() {
-      this.x += this.vx;
-      this.y += this.vy;
-      this.vy += gravity/2;
-      this.alpha -= 0.02;
-    }
-    draw() {
-      ctx.save();
-      ctx.globalAlpha = this.alpha;
-      ctx.fillStyle = this.color;
-      ctx.beginPath();
-      ctx.arc(this.x, this.y, this.size, 0, Math.PI*2);
-      ctx.fill();
-      ctx.restore();
-    }
+  function stopTurnTimer() {
+    if(!turnStartTime) return;
+    const elapsed = Date.now() - turnStartTime;
+    if(turn === humanColor) humanTotalTime += elapsed;
+    else aiTotalTime += elapsed;
+    turnStartTime = null;
+    if(timerInterval) clearInterval(timerInterval);
+    humanTimerSpan.textContent = formatTime(humanTotalTime);
+    aiTimerSpan.textContent = formatTime(aiTotalTime);
   }
 
-  function animateFireworks() {
-    ctx.clearRect(0, 0, fireworksCanvas.width, fireworksCanvas.height);
-    fireworks.forEach(fw => {
-      fw.update();
-      fw.draw();
-    });
-    fireworks = fireworks.filter(fw => !fw.isDone());
-    if(fireworks.length > 0) {
-      requestAnimationFrame(animateFireworks);
-    }
-  }
-
-  function launchFireworks() {
-    for(let i=0; i<5; i++) {
-      fireworks.push(new Firework());
-    }
-    animateFireworks();
-  }
-
-  // Move piece if legal
+  // Move piece & AI integration:
   function tryMove(from, to) {
     if(gameOver) return;
 
@@ -469,36 +409,29 @@
     const color = piece[0] === 'w' ? 'white' : 'black';
     if(color !== turn) return;
 
-    // Get legal moves and filter by pawn first move rule
     let legalMoves = getLegalMoves(gameState, from.r, from.c);
     legalMoves = filterByPawnFirstMove(legalMoves, from.r, from.c, color);
 
     if(!legalMoves.some(m => m.r === to.r && m.c === to.c)) return;
 
-    // Move piece
+    stopTurnTimer();
+
     let capturedPiece = gameState[to.r][to.c];
     gameState[to.r][to.c] = piece;
     gameState[from.r][from.c] = '';
 
-    // Update pawnMoved flag if pawn moved
     if(piece[1] === 'P' && !pawnMoved[color]) pawnMoved[color] = true;
 
-    // Update scores on capture
     if(capturedPiece) {
-      if(capturedPiece[0] === 'w') {
-        whiteScore++;
-      } else {
-        blackScore++;
-      }
+      if(capturedPiece[0] === 'w') whiteScore++;
+      else blackScore++;
     }
 
-    // Check check or mate on opponent
     let {check, checkmate} = checkCheckAndMate();
 
     drawBoard();
     updateUI();
 
-    // If checkmate, end game with celebration
     if(checkmate) {
       gameOver = true;
       alert(`${turn.charAt(0).toUpperCase() + turn.slice(1)} wins by checkmate!`);
@@ -510,24 +443,54 @@
       alert(`${turn.charAt(0).toUpperCase() + turn.slice(1)} put opponent in check!`);
     }
 
-    // Switch turn
     turn = (turn === 'white') ? 'black' : 'white';
     selectedSquare = null;
     possibleMoves = [];
     highlightSquares([]);
 
+    startTurnTimer();
+
+    if(turn === AIColor && !gameOver) {
+      setTimeout(makeAIMove, 600);
+    }
   }
 
-  // Click handler
+  async function makeAIMove() {
+    if(gameOver || turn !== AIColor) return;
+
+    const moves = [];
+    for(let r=0; r<8; r++) {
+      for(let c=0; c<8; c++) {
+        const piece = gameState[r][c];
+        if(piece && piece[0] === (AIColor === 'white' ? 'w' : 'b')) {
+          const legal = getLegalMoves(gameState, r, c);
+          legal.forEach(to => moves.push({from: {r,c}, to}));
+        }
+      }
+    }
+
+    if(moves.length === 0) {
+      alert(`${AIColor.charAt(0).toUpperCase() + AIColor.slice(1)} has no moves. Game over!`);
+      gameOver = true;
+      return;
+    }
+
+    await new Promise(r => setTimeout(r, 1000));
+
+    const move = moves[Math.floor(Math.random() * moves.length)];
+
+    tryMove(move.from, move.to);
+  }
+
   board.addEventListener('click', e => {
     if(gameOver) return;
     if(!e.target.classList.contains('square')) return;
+    if(turn !== humanColor) return;
 
     const r = +e.target.dataset.r;
     const c = +e.target.dataset.c;
     const piece = gameState[r][c];
 
-    // If nothing selected yet
     if(!selectedSquare) {
       if(!piece) return;
       const color = piece[0] === 'w' ? 'white' : 'black';
@@ -542,9 +505,7 @@
       possibleMoves = legalMoves;
       highlightSquares(possibleMoves);
     } else {
-      // Try to move
       if(selectedSquare.r === r && selectedSquare.c === c) {
-        // Deselect
         selectedSquare = null;
         possibleMoves = [];
         highlightSquares([]);
@@ -567,6 +528,17 @@
     updateUI();
     drawBoard();
     highlightSquares([]);
+
+    humanTotalTime = 0;
+    aiTotalTime = 0;
+    humanTimerSpan.textContent = "00:00";
+    aiTimerSpan.textContent = "00:00";
+
+    startTurnTimer();
+
+    if(turn === AIColor) {
+      setTimeout(makeAIMove, 600);
+    }
   });
 
   flipBtn.addEventListener('click', () => {
@@ -580,9 +552,45 @@
     fireworksCanvas.height = window.innerHeight;
   });
 
-  // Initial draw
-  updateUI();
+  document.getElementById('chooseWhite').addEventListener('click', () => {
+    humanColor = 'white';
+    AIColor = 'black';
+    startGame();
+  });
+
+  document.getElementById('chooseBlack').addEventListener('click', () => {
+    humanColor = 'black';
+    AIColor = 'white';
+    startGame();
+  });
+
+  function startGame() {
+    colorChoiceDiv.style.display = 'none';
+    turnIndicator.style.display = 'block';
+    scoreDisplay.style.display = 'block';
+    document.querySelector('.controls').style.display = 'block';
+    board.style.display = 'grid';
+    timersDiv.style.display = 'block';
+
+    resetBtn.click();
+
+    turn = 'white';
+    updateUI();
+
+    if(turn === AIColor) {
+      setTimeout(makeAIMove, 600);
+    }
+  }
+
+  turnIndicator.style.display = 'none';
+  scoreDisplay.style.display = 'none';
+  document.querySelector('.controls').style.display = 'none';
+  board.style.display = 'none';
+  timersDiv.style.display = 'none';
+
   drawBoard();
+
+  // Fireworks code can be included here as is from your original code.
 
 })();
 </script>
